@@ -28,9 +28,34 @@ _NOISE_SELECTORS = [
     ".rich_media_tool",
     ".like_a_look_info",
     "#js_pc_qr_code",
-    ".share_notice",
     ".reward_qrcode_area",
     ".js_underline_link_tooltip",
+    ".rich_media_extra",
+    ".rich_media_meta_list",
+    ".discuss_mod",
+    ".wx_bottom_modal_wrp",
+    ".weui-mask",
+    ".teleporter.hidden",
+]
+
+_TITLE_SELECTORS = [
+    "#activity-name",
+    ".rich_media_title",
+    "h1.rich_media_title",
+]
+
+_AUTHOR_SELECTORS = [
+    "#js_name",
+    ".account_nickname_inner",
+    ".rich_media_meta_nickname",
+    ".reward-author",
+]
+
+_CONTENT_SELECTORS = [
+    "#js_content",
+    "#js_article_content #js_content",
+    "#js_image_content",
+    ".rich_media_content",
 ]
 
 
@@ -73,14 +98,42 @@ def extract_publish_time(html: str) -> str:
     return ""
 
 
+def _select_first_text(soup: BeautifulSoup, selectors: list[str]) -> str:
+    """Return the first non-empty text matched by the selectors."""
+    for selector in selectors:
+        el = soup.select_one(selector)
+        if not el:
+            continue
+        text = el.get_text(" ", strip=True)
+        if text:
+            return text
+    return ""
+
+
+def _meta_content(soup: BeautifulSoup, selector: str) -> str:
+    """Read content= from a meta tag if present."""
+    el = soup.select_one(selector)
+    if not el:
+        return ""
+    content = el.get("content")
+    return str(content).strip() if content else ""
+
+
 def extract_metadata(soup: BeautifulSoup, html: str, url: str = "") -> ArticleMetadata:
     """Extract article metadata (title, author, publish time)."""
-    title_el = soup.select_one("#activity-name")
-    author_el = soup.select_one("#js_name")
+    title = _select_first_text(soup, _TITLE_SELECTORS)
+    author = _select_first_text(soup, _AUTHOR_SELECTORS)
+
+    if not title:
+        title = _meta_content(soup, 'meta[property="og:title"]') or _select_first_text(soup, ["title"])
+    if not author:
+        author = _meta_content(soup, 'meta[name="author"]') or _meta_content(
+            soup, 'meta[property="og:article:author"]'
+        )
 
     return ArticleMetadata(
-        title=title_el.get_text(strip=True) if title_el else "",
-        author=author_el.get_text(strip=True) if author_el else "",
+        title=title,
+        author=author,
         publish_time=extract_publish_time(html),
         source_url=url,
     )
@@ -171,9 +224,14 @@ def process_content(soup: BeautifulSoup) -> ParsedContent:
     extract media, remove noise, collect image URLs.
     """
     logger = get_logger()
-    content_el = soup.select_one("#js_content")
+    content_el = None
+    for selector in _CONTENT_SELECTORS:
+        candidate = soup.select_one(selector)
+        if candidate:
+            content_el = candidate
+            break
     if not content_el:
-        logger.warning("No #js_content found in page")
+        logger.warning("No article content container found in page")
         return ParsedContent()
 
     # 1. Fix lazy-loaded images
@@ -189,6 +247,16 @@ def process_content(soup: BeautifulSoup) -> ParsedContent:
     # 4. Remove noise elements
     for selector in _NOISE_SELECTORS:
         for el in content_el.select(selector):
+            el.decompose()
+
+    # The document title is emitted separately in frontmatter/body header.
+    for el in content_el.select(".rich_media_title"):
+        el.decompose()
+
+    # New WeChat pages often place the main text in #js_image_desc.share_notice.
+    # Keep that node but continue removing other share_notice chrome.
+    for el in content_el.select(".share_notice"):
+        if el.get("id") != "js_image_desc":
             el.decompose()
 
     # 5. Collect image URLs (de-duplicated, order preserved)

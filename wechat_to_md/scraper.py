@@ -18,10 +18,29 @@ _CAPTCHA_INDICATORS = [
     "操作频繁",
 ]
 
+_ARTICLE_READY_SELECTORS = [
+    "#js_content",
+    "#js_article_content",
+    "#js_image_content",
+    ".rich_media_title",
+]
+
+_ARTICLE_CONTENT_INDICATORS = [
+    'id="js_content"',
+    'id="js_article_content"',
+    'id="js_image_content"',
+    "rich_media_title",
+]
+
 
 def _is_captcha_page(html: str) -> bool:
     """Check if the HTML contains CAPTCHA/verification indicators."""
     return any(indicator in html for indicator in _CAPTCHA_INDICATORS)
+
+
+def _has_article_content(html: str) -> bool:
+    """Check whether the HTML contains rendered article structure."""
+    return any(indicator in html for indicator in _ARTICLE_CONTENT_INDICATORS)
 
 
 async def fetch_page_html(
@@ -47,9 +66,13 @@ async def fetch_page_html(
 
                 await page.goto(url, wait_until="domcontentloaded")
 
-                # Wait for the article content container
+                # Wait for one of the rendered article containers to appear.
                 try:
-                    await page.wait_for_selector("#js_content", timeout=15000)
+                    await page.wait_for_function(
+                        """(selectors) => selectors.some((selector) => document.querySelector(selector))""",
+                        _ARTICLE_READY_SELECTORS,
+                        timeout=15000,
+                    )
                 except Exception:
                     pass  # Timeout not fatal — content may still be present
 
@@ -69,9 +92,9 @@ async def fetch_page_html(
                         "Try running with --no-headless to solve manually."
                     )
 
-                # Validate: has content?
-                if "#activity-name" not in html and "rich_media_title" not in html:
-                    logger.warning("Page may not contain a valid article (no title element found)")
+                # Retry if WeChat only returned shell/meta content and the body never rendered.
+                if not _has_article_content(html):
+                    raise RuntimeError("Rendered article body not found")
 
                 return html
 
